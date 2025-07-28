@@ -7,6 +7,7 @@ from std_msgs.msg import Float32, Float64, String, Float64MultiArray
 import time
 from pyquaternion import Quaternion
 import math
+from scipy.special import softmax
 import threading
 import numpy as np
 import matplotlib.pyplot as plt
@@ -2096,6 +2097,277 @@ def placa_callback(data):
 	global placa_msg
 	placa_msg=data.data
 
+def task_allocation_ARCog_NET(S_Li_t, T_list, W_Li_t, H_Li_t, kappa_Li, omega_Li, L):
+    """
+    Processo de Alocação de Tarefas no ARCog-NET.
+    
+    Parâmetros:
+        S_Li_t: Estado do UAV no tempo t.
+        T_list: Lista de tarefas {T_1, T_2, ..., T_R}.
+        W_Li_t: Pesos das decisões (TA, PP, FC).
+        H_Li_t: Histórico de desempenho.
+        kappa_Li: Memória de pesos.
+        omega_Li: Memória de históricos.
+        L: Taxa de aprendizado.
+    
+    Retorna:
+        T_alloc: Tarefa alocada.
+    """
+    T_alloc = None
+    U_alloc = -np.inf  # Inicializa com valor mínimo
+    N_i = []  # Vizinhos do UAV (ajustar conforme rede)
+    
+    for T_r in T_list:
+        # Inicializa custos para a tarefa T_r
+        C_TA = compute_C_TA()  # Função não definida (exemplo)
+        if T_r == "T_nav":  # Tarefa de navegação
+            C_PP = compute_C_PP()  # Função não definida
+            C_FC = compute_C_FC()
+        else:
+            C_PP = 0
+            C_FC = 0
+        
+        # Atualiza custos baseados em W_Li_t e H_Li_t
+        for n, W_Li in enumerate(omega_Li):
+            H_Li = kappa_Li[n]
+            a = np.argmax(W_Li['w_TA'])  # Índice do maior peso TA
+            b = np.argmax(W_Li['w_PP'])
+            c = np.argmax(W_Li['w_FC'])
+            C_TA_max = H_Li['H_TA'][a]
+            C_PP_max = H_Li['H_PP'][b]
+            C_FC_max = H_Li['H_FC'][c]
+            
+            if C_TA <= C_TA_max:
+                C_TA = C_TA_max
+            if C_PP <= C_PP_max:
+                C_PP = C_PP_max
+            if C_FC <= C_FC_max:
+                C_FC = C_FC_max
+        
+        # Calcula utilidades
+        Phi_mission = compute_Phi_mission(S_Li_t, H_Li_t)
+        Phi_network = compute_Phi_network(S_Li_t, H_Li_t)
+        Phi_energy = compute_Phi_energy(S_Li_t, H_Li_t)
+        Phi_navigation = compute_Phi_navigation(S_Li_t, H_Li_t)
+        
+        w_TA = W_Li_t['w_TA']
+        w_PP = W_Li_t['w_PP']
+        w_FC = W_Li_t['w_FC']
+        
+        U_i_r = (w_TA * (Phi_mission + Phi_network + Phi_energy) + 
+                w_PP * w_FC * Phi_navigation)
+        
+        # Utilidade colaborativa (média dos vizinhos)
+        U_collab_r = np.mean([U_i_r for _ in N_i]) if N_i else U_i_r
+        U_i_r = U_collab_r
+        
+        # Atualiza tarefa alocada se utilidade for maior
+        if U_i_r > U_alloc:
+            T_alloc = T_r
+            U_alloc = U_i_r
+    
+    # Executa a tarefa ou solicita colaboração
+    if T_alloc is not None:
+        execute_task(T_alloc)
+        # Atualiza pesos e histórico (aprendizado)
+        delta_C_TA = compute_delta_C()  # Exemplo: variação do custo
+        W_Li_t['w_TA'] += L * delta_C_TA
+        omega_Li.append(W_Li_t)
+        kappa_Li.append(H_Li_t)
+    else:
+        request_collaboration()  # Função não definida
+    
+    return T_alloc, W_Li_t, omega_Li, kappa_Li
+
+# --- Funções auxiliares ---
+def compute_C_TA(): return np.random.rand()
+def compute_Phi_mission(S, H): return S['mission'] * H['performance']
+def execute_task(T): print(f"Executando tarefa: {T}")
+def request_collaboration(): print("Solicitando colaboração...")
+
+def pso_arcog_net_path_planning(T_nav, rho_Li, V_obj_Li, kappa_Li, omega_Li, t_prev, t_current, 
+                               C_min, max_iter, min_error):
+    """
+    Particle Swarm Optimization for ARCog-NET Navigation Path Planning.
+    
+    Parameters:
+        T_nav: Navigation task (unused in this simplified version but kept for structure)
+        rho_Li: Initial trajectory points (list of [x, y] coordinates)
+        V_obj_Li: Initial velocities for each point
+        kappa_Li: Knowledge base (dictionary with historical data)
+        omega_Li: Weight history (list of weight matrices)
+        t_prev: Previous time step
+        t_current: Current time step
+        C_min: Minimum coverage threshold
+        max_iter: Maximum iterations
+        min_error: Minimum error threshold
+    
+    Returns:
+        Optimized trajectory, updated kappa_Li, updated omega_Li
+    """
+    error = float('inf')
+    iterations = 0
+    delta_t = t_current - t_prev
+    
+    while error > min_error and iterations <= max_iter:
+        new_rho_Li = []
+        
+        # Step 1: Evaluate and potentially replace trajectory points
+        for i, P in enumerate(rho_Li):
+            C_Li = compute_coverage_change(P, delta_t)  # Placeholder function
+            
+            if C_Li >= C_min:
+                new_rho_Li.append(P)
+            else:
+                # Find best fitting replacement from knowledge base
+                best_fit = None
+                best_score = -np.inf
+                
+                for a, weight_matrix in enumerate(omega_Li):
+                    for b, row in enumerate(weight_matrix['W_PP']):
+                        for c, w in enumerate(row):
+                            current_score = w * kappa_Li[a]['H_PP'][b][c]
+                            if current_score > best_score:
+                                best_score = current_score
+                                best_fit = kappa_Li[a]['H_PP'][b][c]
+                
+                new_point = best_fit if best_fit is not None else [0, 0]  # Default if no fit
+                new_rho_Li.append(new_point)
+        
+        # Step 2: Update trajectory points using velocity and angle
+        for k in range(1, len(new_rho_Li)):
+            # Calculate velocity and angle
+            dx = new_rho_Li[k][0] - new_rho_Li[k-1][0]
+            dy = new_rho_Li[k][1] - new_rho_Li[k-1][1]
+            
+            V_k = np.sqrt(dx**2 + dy**2) / delta_t
+            theta_k = math.atan2(dy, dx)
+            
+            # Update position
+            new_rho_Li[k][0] = (new_rho_Li[k-1][0] + 
+                               V_k * math.cos(theta_k) * delta_t)
+            new_rho_Li[k][1] = (new_rho_Li[k-1][1] + 
+                               V_k * math.sin(theta_k) * delta_t)
+            
+            # Update error
+            current_error = abs(compute_coverage_change(new_rho_Li[k], delta_t) - 
+                           compute_coverage_change(new_rho_Li[k-1], delta_t))
+            if current_error < error:
+                error = current_error
+        
+        rho_Li = new_rho_Li
+        iterations += 1
+    
+    # Update knowledge base and weight history
+    C_PP = compute_coverage_change(rho_Li[-1], delta_t)  # Last point's coverage
+    
+    new_H_Li = {
+        'H_PP': generate_new_H_matrix(C_PP),  # Placeholder
+        'timestamp': t_current
+    }
+    
+    new_W_Li = {
+        'W_PP': update_weights(omega_Li[-1]['W_PP'], C_PP)  # Placeholder
+    }
+    
+    # Update knowledge base and history
+    kappa_Li.append(new_H_Li)
+    omega_Li.append(new_W_Li)
+    
+    return rho_Li, kappa_Li, omega_Li
+
+# Placeholder helper functions
+def compute_coverage_change(point, delta_t):
+    """Calculate coverage change for a point (simplified)"""
+    return np.random.uniform(0.5, 1.5)  # Random value for demonstration
+
+def generate_new_H_matrix(C_PP):
+    """Generate new H matrix based on coverage"""
+    return np.random.rand(3, 3) * C_PP  # Example 3x3 matrix
+
+def update_weights(old_weights, C_PP):
+    """Update weight matrix based on coverage"""
+    return old_weights * 0.9 + np.random.rand(*old_weights.shape) * 0.1 * C_PP
+
+def arcog_net_formation_control(e_Li_t, H_Li, W_Li, min_err=0.01, max_it=100):
+    """
+    ARCog-NET PSO Extension for Formation Control
+    
+    Parameters:
+        e_Li_t: Current formation error (vector)
+        H_Li: Historical formation adjustments (list of matrices)
+        W_Li: Historical weighting adjustments (list of matrices)
+        min_err: Minimum error threshold
+        max_it: Maximum iterations
+        
+    Returns:
+        q_best: Best formation adjustment found
+        C_FC: Updated formation control cost
+        updated_H_Li: Updated history
+        updated_W_Li: Updated weights
+    """
+    # Initialize
+    iterations = 0
+    q_best = None
+    J_p_best = -np.inf
+    C_FC = np.zeros_like(e_Li_t)  # Placeholder for FC cost
+    
+    # PSO parameters
+    num_particles = 20
+    positions = np.random.randn(num_particles, len(e_Li_t))  # Particle positions
+    velocities = np.random.randn(num_particles, len(e_Li_t)) * 0.1
+    
+    # Main optimization loop
+    while np.linalg.norm(e_Li_t) > min_err and iterations < max_it:
+        # Update each particle
+        for p in range(num_particles):
+            # 1. Compute position adjustment (Δq)
+            Δq_p = velocities[p]  # Simplified PSO velocity update
+            
+            # 2. Evaluate fitness (J_p)
+            J_p = evaluate_fitness(Δq_p, e_Li_t, H_Li, W_Li)
+            
+            # 3. Update weights using softmax
+            weights = softmax([w['w_FC'] for w in W_Li[-5:]])  # Use last 5 weights
+            W_Li.append({'w_FC': weights[-1]})  # Store updated weights
+            
+            # 4. Update global best if improved
+            if J_p > J_p_best:
+                J_p_best = J_p
+                q_best = Δq_p.copy()
+                C_FC = compute_formation_cost(Δq_p, e_Li_t)  # Eq. from paper
+        
+        iterations += 1
+        
+        # Update formation error (simplified)
+        e_Li_t = update_formation_error(e_Li_t, q_best)
+    
+    # Update knowledge base
+    updated_H_Li = H_Li.copy()
+    updated_H_Li.append({
+        'Δq': q_best,
+        'C_FC': C_FC,
+        'iteration': iterations
+    })
+    
+    return q_best, C_FC, updated_H_Li, W_Li
+
+# Helper functions (to be implemented based on your equations)
+def evaluate_fitness(Δq, e_Li_t, H_Li, W_Li):
+    """Compute fitness J_p(t) according to Eq. (fitness)"""
+    # Placeholder: Combine error reduction and historical performance
+    error_reduction = -np.linalg.norm(e_Li_t - Δq)
+    historical_adjustment = np.mean([h['Δq'] @ Δq for h in H_Li[-3:]])
+    return error_reduction + 0.3 * historical_adjustment
+
+def compute_formation_cost(Δq, e_Li_t):
+    """Compute formation control cost C_{L'_jL_i}^{FC}"""
+    return np.linalg.norm(Δq - 0.5*e_Li_t)
+
+def update_formation_error(e_Li_t, Δq):
+    """Update formation error after applying adjustment"""
+    return e_Li_t - Δq * 0.8  # Damped correction    
+
 #rospy.init_node("controlador_offboard_iris0")
 rospy.init_node("offboard_uav"+str(numero_uav))
 if __name__ == '__main__':
@@ -2207,4 +2479,31 @@ if __name__ == '__main__':
 		#       #print(dados_cam[0])
 		#       #print(dados_cam[2])
 		# cam_msg=None
+
+	# Exemplo de uso do algoritmo de PP:
+    """initial_trajectory = [[0, 0], [1, 1], [2, 2], [3, 3]]
+    initial_velocities = [1.0, 1.0, 1.0, 1.0]
+    knowledge_base = [{'H_PP': np.random.rand(3, 3)} for _ in range(3)]
+    weight_history = [{'W_PP': np.random.rand(3, 3)} for _ in range(3)]
+    
+    # Run PSO
+    optimized_path, updated_kappa, updated_omega = pso_arcog_net_path_planning(
+        "T_nav", initial_trajectory, initial_velocities, knowledge_base, weight_history,
+        0, 1, 0.8, 100, 0.01
+    )
+    print("Optimized Path:", optimized_path)"""
+
+	#Exemplo de uso do algoritmo de FC:
+	"""e_Li_t = np.array([1.2, -0.8, 0.5])  # Current formation error
+	    H_Li = [{'Δq': np.random.randn(3), 'C_FC': np.random.rand()}
+	           for _ in range(5)]  # Last 5 adjustments
+	    W_Li = [{'w_FC': np.random.rand()} for _ in range(5)]  # Last 5 weights
+	    
+	    # Run formation control
+	    q_optimized, C_FC_updated, H_updated, W_updated = arcog_net_formation_control(
+	        e_Li_t, H_Li, W_Li
+	    )
+	    
+	    print(f"Optimal adjustment: {q_optimized}")
+	    print(f"Updated FC cost: {C_FC_updated}")"""
 
