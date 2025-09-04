@@ -12,5 +12,5 @@ Basic packages for simulating a mission
 9. In another terminal on the same folder, launch "python3 server.py"
 
 # References
-
+Kalami Heris, Mostapha (2023). Python Implementation of Path Planning and Obstacle Avoidance using PSO [Computer software]. Retrieved from https://github.com/smkalami/path-planning
    
